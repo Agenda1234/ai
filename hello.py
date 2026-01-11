@@ -2,7 +2,7 @@ import os
 from openai import OpenAI
 
 # ====================== 1. 配置阿里通义千问API ======================
-DASHSCOPE_API_KEY = "sk-4431e38c85224bf3aee564da442729c6"
+DASHSCOPE_API_KEY = "sk-111"
 os.environ["DASHSCOPE_API_KEY"] = DASHSCOPE_API_KEY
 
 # 初始化千问大模型客户端（仅未命中时调用）
