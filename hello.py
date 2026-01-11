@@ -1,44 +1,40 @@
 import os
 from openai import OpenAI
 
-# ====================== 1. 配置阿里通义千问API ======================
+# 配置千问API
 DASHSCOPE_API_KEY = "sk-4431e38c85224bf3aee564da442729c6"
 os.environ["DASHSCOPE_API_KEY"] = DASHSCOPE_API_KEY
 
-# 初始化千问大模型客户端（仅未命中时调用）
 client = OpenAI(
     api_key=DASHSCOPE_API_KEY,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
 )
 
-# ====================== 2. 核心函数：优先读向量库，命中直接返回，未命中调用大模型 ======================
-def retrieve_or_answer(query: str, vectorstore, similarity_threshold: float = 0.5):
+# 核心检索函数（新增阈值展示逻辑）
+def retrieve_or_answer(query: str, vectorstore, distance_threshold: float = 1.0):
     """
     核心逻辑：
-    1. 从向量库检索，命中（相似度≥阈值）→ 直接返回检索结果；
-    2. 未命中 → 调用大模型用通用知识回答。
-    :param query: 用户查询问题
-    :param vectorstore: Chroma向量库对象
-    :param similarity_threshold: 相似度阈值（0-1）
-    :return: 最终回答
+    1. Chroma返回的是余弦距离（0-2），距离≤阈值才视为命中（距离越小相似度越高）；
+    2. 未命中时展示当前使用的阈值，方便排查；
     """
-    # 步骤1：从向量库检索（带相似度分数）
     results = vectorstore.similarity_search_with_score(query=query, k=3)
+    valid_results = [(doc, score) for doc, score in results if score <= distance_threshold]
     
-    # 步骤2：过滤有效结果（相似度≥阈值）
-    valid_results = [(doc, score) for doc, score in results if score >= similarity_threshold]
-    
-    # 分支1：命中 → 直接返回检索到的内容
     if valid_results:
-        # 拼接所有有效检索结果
         retrieved_content = "\n\n".join([
-            f"【相关内容 {i+1}（相似度：{score:.2f}）】\n{doc.page_content}"
+            f"【相关内容 {i+1}（距离：{score:.2f}）】\n{doc.page_content}"
             for i, (doc, score) in enumerate(valid_results)
         ])
         return f"✅ 从文档中找到相关内容：\n{retrieved_content}"
-    
-    # 分支2：未命中 → 调用大模型回答
     else:
+        # 未命中时，补充展示阈值和检索到的最低距离（便于调试）
+        # 获取所有检索结果的距离，展示最接近的那个
+        if results:
+            min_distance = min([score for _, score in results])
+            hint = f"（当前距离阈值：{distance_threshold}，检索到的最小距离：{min_distance:.2f}）"
+        else:
+            hint = f"（当前距离阈值：{distance_threshold}，未检索到任何内容）"
+        
         try:
             completion = client.chat.completions.create(
                 model="qwen-plus",
@@ -48,30 +44,46 @@ def retrieve_or_answer(query: str, vectorstore, similarity_threshold: float = 0.
                 ]
             )
             answer = completion.choices[0].message.content
-            return f"📝 未从文档中找到相关内容，以下是通用回答：\n{answer}"
+            return f"📝 未从文档中找到相关内容 {hint}，以下是通用回答：\n{answer}"
         except Exception as e:
-            return f"❌ 大模型调用失败：{str(e)}"
+            return f"❌ 大模型调用失败 {hint}：{str(e)}"
 
-# ====================== 3. 加载PDF+拆分+向量化+存入向量库 ======================
-from langchain.document_loaders import PyPDFLoader
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings.dashscope import DashScopeEmbeddings
-from langchain.vectorstores import Chroma
+# 加载PDF+拆分（新版导入路径）
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import CharacterTextSplitter
+from langchain_community.embeddings.dashscope import DashScopeEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
 
 # 加载PDF
 loader = PyPDFLoader("agendadu.pdf")
-pages = loader.load_and_split()
-print(f"✅ PDF加载完成，总页数: {len(pages)}")
+raw_pages = loader.load()
+print(f"✅ PDF加载完成，原始页数: {len(raw_pages)}")
+
+# 标准化Document
+pages = []
+for page in raw_pages:
+    content = page.page_content.strip() if hasattr(page, "page_content") else ""
+    if content:
+        pages.append(Document(page_content=content, metadata=page.metadata if hasattr(page, "metadata") else {}))
 
 # 拆分文本
 text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50, separator="\n")
 docs = text_splitter.split_documents(pages)
-print(f"✅ 文本拆分完成，总段落数: {len(docs)}")
 
-# 初始化阿里嵌入模型
+# 去重
+unique_docs = []
+seen_content = set()
+for doc in docs:
+    content = doc.page_content.strip()
+    if content not in seen_content:
+        seen_content.add(content)
+        unique_docs.append(doc)
+docs = unique_docs
+print(f"✅ 文本拆分+去重完成，总段落数: {len(docs)}")
+
+# 向量化+存储
 embeddings = DashScopeEmbeddings(model="text-embedding-v2", dashscope_api_key=DASHSCOPE_API_KEY)
-
-# 存入向量库（持久化）
 vectorstore = Chroma.from_documents(
     documents=docs,
     embedding=embeddings,
@@ -81,15 +93,11 @@ vectorstore = Chroma.from_documents(
 vectorstore.persist()
 print("✅ 文本向量化完成，已存入Chroma向量数据库")
 
-# ====================== 4. 测试：命中返回检索结果，未命中调用大模型 ======================
-# 测试1：命中的查询（PDF里有相关内容）→ 直接返回检索结果
-query1 = "他在哪家企业工作过"
+# 测试
+query1 = "他哪年在哪家企业工作过"
 print(f"\n🔍 查询1：{query1}")
-answer1 = retrieve_or_answer(query1, vectorstore, similarity_threshold=0.5)
-print(answer1)
+print(retrieve_or_answer(query1, vectorstore, distance_threshold=1.1))
 
-# 测试2：未命中的查询（PDF里无相关内容）→ 调用大模型回答
-query2 = "2025年英雄联盟S15冠军是谁"
+query2 = "你是谁"
 print(f"\n🔍 查询2：{query2}")
-answer2 = retrieve_or_answer(query2, vectorstore, similarity_threshold=0.5)
-print(answer2)
+print(retrieve_or_answer(query2, vectorstore, distance_threshold=1.0))
