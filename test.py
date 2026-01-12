@@ -22,7 +22,7 @@ from langchain_community.vectorstores import FAISS
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ===================== 配置阿里云API密钥 =====================
-DASHSCOPE_API_KEY = "sk-4431e38c85224bf3aee564da442729c6"
+DASHSCOPE_API_KEY = ""
 os.environ["DASHSCOPE_API_KEY"] = DASHSCOPE_API_KEY
 
 def extract_text_with_documents(pdf) -> List[Document]:

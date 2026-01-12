@@ -2,7 +2,7 @@ import os
 from openai import OpenAI
 
 # 配置千问API
-DASHSCOPE_API_KEY = "sk-4431e38c85224bf3aee564da442729c6"
+DASHSCOPE_API_KEY = ""
 os.environ["DASHSCOPE_API_KEY"] = DASHSCOPE_API_KEY
 
 client = OpenAI(
