@@ -100,4 +100,9 @@ print(retrieve_or_answer(query1, vectorstore, distance_threshold=1.1))
 
 query2 = "你是谁"
 print(f"\n🔍 查询2：{query2}")
+<<<<<<< HEAD
 print(retrieve_or_answer(query2, vectorstore, distance_threshold=1.0))
+=======
+answer2 = retrieve_or_answer(query2, vectorstore, similarity_threshold=0.5)
+print(answer2)
+>>>>>>> 34d4026955bdd258d2df7cd5e8960e6d2c0b5c10
