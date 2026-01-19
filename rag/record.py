@@ -3,15 +3,14 @@ import bs4
 import asyncio
 
 # ========== 环境配置 ==========
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_API_KEY"] = "lsv2_pt_e68f8a4666eb4fb880bc88a64107f3ed_10312300"
 os.environ["USER_AGENT"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-os.environ["DASHSCOPE_API_KEY"] = "sk-4431e38c85224bf3aee564d3219c6"
+os.environ["DASHSCOPE_API_KEY"] = "sk-4431e38c85224bf3aee564da442729c6"
 
 # ========== 導入依賴 ==========
 from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_chroma import Chroma
+from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate
@@ -20,13 +19,14 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import AIMessage
 from langchain_core.tools.retriever import create_retriever_tool
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage,SystemMessage
+from supabase.client import Client,create_client
 
 # ========== 初始化模型 ==========
 llm = ChatOpenAI(
     api_key=os.environ["DASHSCOPE_API_KEY"],
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    model_name= "qwen-turbo",
+    model_name= "qwen-plus",
     temperature=0.7,
     max_tokens=1000
 )
@@ -47,10 +47,21 @@ text_splitter = RecursiveCharacterTextSplitter(chunk_size = 1000, chunk_overlap 
 splits = text_splitter.split_documents(docs)
 
 # 存储切割后文本并保存在向量数据库Chroma中,persist_directory指持久化目录
-embeddings = DashScopeEmbeddings(model="text-embedding-v2", dashscope_api_key=os.environ["DASHSCOPE_API_KEY"])
+embeddings = DashScopeEmbeddings(model="text-embedding-v1", dashscope_api_key=os.environ["DASHSCOPE_API_KEY"])
 vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
 retriever = vectorstore.as_retriever()
-
+# vectorstore.add_texts(
+#     texts=["i worked at kensho"],
+#     metadatas=[{"namespace": "harrison"}]  # 用 metadata 替代 namespace
+# )
+# vectorstore.add_texts(
+#     texts=["i worked at facebook"],
+#     metadatas=[{"namespace": "ankush"}]
+# )
+# result1 = vectorstore.as_retriever(search_kwargs={"k": 1,"filter": {"namespace": "ankush"}})._get_relevant_documents("where did i work?",run_manager=None)
+# result2 = vectorstore.as_retriever(search_kwargs={"k": 1,"filter": {"namespace": "harrison"}})._get_relevant_documents("where did i work?",run_manager=None)
+# print(result1)
+# print(result2)
 
 # 根据是否有历史聊天记录来传输，否则返回原问题
 def contextualized_question(input: dict) -> str:
@@ -82,6 +93,7 @@ system_prompt = (
     "- 如果问题涉及任务分解（Task Decomposition）、自主智能体（Autonomous Agents）等主题，"
     "请优先调用 blog_post_retriever 工具获取信息。\n"
     "- 回答要简洁，最多三句话。\n"
+    "- 列出所有用來回答問題的信息來源(作者+年份+網頁鏈接),用中文回答\n"
     "- 如果不知道答案，就说“我不知道”。\n\n"
     "{tools}"
 )
@@ -116,22 +128,17 @@ from langgraph.checkpoint.memory import MemorySaver
 memory = MemorySaver()
 contextualize_q_llm = llm.with_config(tags=["contextualize_q_llm"])
 agent_executor = create_agent(contextualize_q_llm,tools=tool_use(), checkpointer=memory)
-
 async def async_test():
-    start = 0
-    end = 0
-    query = "What is Task Decomposition? " + "返回的内容会自动附带原始网页链接,用中文回答"
+    query = "JIT编译器在JVM中吗? "
     config = {"configurable": {"thread_id": "abc123"}}
     async for event in agent_executor.astream_events(
-        {"messages": [HumanMessage(content=query)]}, config=config,
+        {"messages": [HumanMessage(content=query),SystemMessage(content=f"{qa_prompt}\n\n")]}, config=config,
         include_types=["llm_stream","tool","agent","chain","llm"]
     ):
         event_type = event["event"]
-        if event_type == "on_chain_start" and start == 0:
+        if event_type == "on_chain_start" and event.get("name") == "LangGraph":
             print(f"【问题】：{event['data']['input']['messages'][0].content}")
-            start+=1
-        elif event_type == "on_chain_end" and end == 0:
-            end+=1
+        elif event_type == "on_chain_end" and event.get("name") == "LangGraph":
             print(f"【LLM回答】: {event['data']['output']['messages'][-1].content}")
 
 if __name__ == "__main__":
